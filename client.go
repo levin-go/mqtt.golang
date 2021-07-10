@@ -440,12 +440,17 @@ func (c *client) Disconnect(quiesce uint) {
 		dm := packets.NewControlPacket(packets.Disconnect).(*packets.DisconnectPacket)
 		dt := newToken(packets.Disconnect)
 		disconnectSent := false
+		tiker := time.NewTicker(time.Duration(quiesce) * time.Millisecond)
 		select {
 		case c.oboundP <- &PacketAndToken{p: dm, t: dt}:
+			tiker.Stop()
 			disconnectSent = true
 		case <-c.commsStopped:
+			tiker.Stop()
 			WARN.Println("Disconnect packet could not be sent because comms stopped")
-		case <-time.After(time.Duration(quiesce) * time.Millisecond):
+		//case <-time.After(time.Duration(quiesce) * time.Millisecond):
+		case <- tiker.C:
+			tiker.Stop()
 			WARN.Println("Disconnect packet not sent due to timeout")
 		}
 
@@ -732,9 +737,13 @@ func (c *client) Publish(topic string, qos byte, retained bool, payload interfac
 		if publishWaitTimeout == 0 {
 			publishWaitTimeout = time.Second * 30
 		}
+		tiker := time.NewTicker(publishWaitTimeout)
 		select {
 		case c.obound <- &PacketAndToken{p: pub, t: token}:
-		case <-time.After(publishWaitTimeout):
+			tiker.Stop()
+		//case <-time.After(publishWaitTimeout):
+		case <- tiker.C:
+			tiker.Stop()
 			token.setError(errors.New("publish was broken by timeout"))
 		}
 	}
@@ -812,9 +821,12 @@ func (c *client) Subscribe(topic string, qos byte, callback MessageHandler) Toke
 		if subscribeWaitTimeout == 0 {
 			subscribeWaitTimeout = time.Second * 30
 		}
+		tiker := time.NewTicker(subscribeWaitTimeout)
 		select {
 		case c.oboundP <- &PacketAndToken{p: sub, t: token}:
-		case <-time.After(subscribeWaitTimeout):
+			tiker.Stop()
+		case <-tiker.C:
+			tiker.Stop()
 			token.setError(errors.New("subscribe was broken by timeout"))
 		}
 	}
@@ -884,9 +896,13 @@ func (c *client) SubscribeMultiple(filters map[string]byte, callback MessageHand
 		if subscribeWaitTimeout == 0 {
 			subscribeWaitTimeout = time.Second * 30
 		}
+		tiker := time.NewTicker(subscribeWaitTimeout)
 		select {
 		case c.oboundP <- &PacketAndToken{p: sub, t: token}:
-		case <-time.After(subscribeWaitTimeout):
+			tiker.Stop()
+		//case <-time.After(subscribeWaitTimeout):
+		case <- tiker.C:
+			tiker.Stop()
 			token.setError(errors.New("subscribe was broken by timeout"))
 		}
 	}
@@ -1064,12 +1080,16 @@ func (c *client) Unsubscribe(topics ...string) Token {
 		if subscribeWaitTimeout == 0 {
 			subscribeWaitTimeout = time.Second * 30
 		}
+		tiker := time.NewTicker(subscribeWaitTimeout)
 		select {
 		case c.oboundP <- &PacketAndToken{p: unsub, t: token}:
+			tiker.Stop()
 			for _, topic := range topics {
 				c.msgRouter.deleteRoute(topic)
 			}
-		case <-time.After(subscribeWaitTimeout):
+		//case <-time.After(subscribeWaitTimeout):
+		case <-tiker.C:
+			tiker.Stop()
 			token.setError(errors.New("unsubscribe was broken by timeout"))
 		}
 	}
