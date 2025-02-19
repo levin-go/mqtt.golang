@@ -1,10 +1,14 @@
 /*
- * Copyright (c) 2013 IBM Corp.
+ * Copyright (c) 2021 IBM Corp and others.
  *
  * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * are made available under the terms of the Eclipse Public License v2.0
+ * and Eclipse Distribution License v1.0 which accompany this distribution.
+ *
+ * The Eclipse Public License is available at
+ *    https://www.eclipse.org/legal/epl-2.0/
+ * and the Eclipse Distribution License is available at
+ *   http://www.eclipse.org/org/documents/edl-v10.php.
  *
  * Contributors:
  *    Seth Hoenig
@@ -19,6 +23,7 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -121,7 +126,7 @@ func Test_Disconnect(t *testing.T) {
 	go func() {
 		c.Disconnect(250)
 		cli := c.(*client)
-		cli.status = connected
+		cli.status.forceConnectionStatus(connected)
 		c.Disconnect(250)
 		close(disconnectC)
 	}()
@@ -1142,12 +1147,12 @@ func Test_cleanUpMids(t *testing.T) {
 	}
 
 	token := c.Publish("/test/cleanUP", 2, false, "cleanup test")
-	c.(*client).messageIds.Lock()
+	c.(*client).messageIds.mu.Lock()
 	fmt.Println("Breaking connection", len(c.(*client).messageIds.index))
 	if len(c.(*client).messageIds.index) == 0 {
 		t.Fatalf("Should be a token in the messageIDs, none found")
 	}
-	c.(*client).messageIds.Unlock()
+	c.(*client).messageIds.mu.Unlock()
 	c.(*client).internalConnLost(fmt.Errorf("cleanup test"))
 
 	time.Sleep(1 * time.Second)
@@ -1155,11 +1160,11 @@ func Test_cleanUpMids(t *testing.T) {
 		t.Fail()
 	}
 
-	c.(*client).messageIds.Lock()
+	c.(*client).messageIds.mu.Lock()
 	if len(c.(*client).messageIds.index) > 0 {
 		t.Fatalf("Should have cleaned up messageIDs, have %d left", len(c.(*client).messageIds.index))
 	}
-	c.(*client).messageIds.Unlock()
+	c.(*client).messageIds.mu.Unlock()
 
 	// This test used to check that token.Error() was not nil. However this is not something that can
 	// be done reliably - it is likely to work with a remote broker but less so with a local one.
@@ -1186,29 +1191,36 @@ func Test_cleanUpMids_2(t *testing.T) {
 	ops.SetKeepAlive(10 * time.Second)
 
 	c := NewClient(ops)
+	cl := c.(*client)
 
 	if token := c.Connect(); token.Wait() && token.Error() != nil {
 		t.Fatalf("Error on Client.Connect(): %v", token.Error())
 	}
 
 	token := c.Publish("/test/cleanUP", 2, false, "cleanup test 2")
-	if len(c.(*client).messageIds.index) == 0 {
+	cl.messageIds.mu.Lock()
+	mq := len(c.(*client).messageIds.index)
+	cl.messageIds.mu.Unlock()
+	if mq == 0 {
 		t.Fatalf("Should be a token in the messageIDs, none found")
 	}
-	fmt.Println("Disconnecting", len(c.(*client).messageIds.index))
+	// fmt.Println("Disconnecting", len(cl.messageIds.index))
 	c.Disconnect(0)
 
 	fmt.Println("Wait on Token")
 	// We should be able to wait on this token without any issue
 	token.Wait()
 
-	if len(c.(*client).messageIds.index) > 0 {
+	cl.messageIds.mu.Lock()
+	mq = len(c.(*client).messageIds.index)
+	cl.messageIds.mu.Unlock()
+	if mq > 0 {
 		t.Fatalf("Should have cleaned up messageIDs, have %d left", len(c.(*client).messageIds.index))
 	}
 	if token.Error() == nil {
 		t.Fatal("token should have received an error on connection loss")
 	}
-	fmt.Println(token.Error())
+	// fmt.Println(token.Error())
 }
 
 func Test_ConnectRetry(t *testing.T) {
@@ -1315,8 +1327,6 @@ func Test_ConnectRetryPublish(t *testing.T) {
 func Test_ResumeSubs(t *testing.T) {
 	topic := "/test/ResumeSubs"
 	var qos byte = 1
-	payload := "sample Payload"
-	choke := make(chan bool)
 
 	// subscribe to topic before establishing a connection, and publish a message after the publish client has connected successfully
 	subMemStore := NewMemoryStore()
@@ -1326,10 +1336,9 @@ func Test_ResumeSubs(t *testing.T) {
 
 	s := NewClient(sops)
 	sConnToken := s.Connect()
+	subToken := s.Subscribe(topic, qos, nil) // Message should be stored before this returns
 
-	subToken := s.Subscribe(topic, qos, nil)
-
-	// Verify the subscribe packet exists in the memorystore
+	// Verify subscribe packet exists in the memory store
 	ids := subMemStore.All()
 	if len(ids) == 0 {
 		t.Fatalf("Expected subscribe packet to be in store")
@@ -1368,11 +1377,9 @@ func Test_ResumeSubs(t *testing.T) {
 		SetStore(subMemStore2).SetResumeSubs(true).SetCleanSession(false).SetConnectRetry(true).
 		SetConnectRetryInterval(time.Second / 2)
 
+	msgChan := make(chan Message)
 	var f MessageHandler = func(client Client, msg Message) {
-		if msg.Topic() != topic || string(msg.Payload()) != payload {
-			t.Fatalf("Received unexpected message: %v, %v", msg.Topic(), msg.Payload())
-		}
-		choke <- true
+		msgChan <- msg
 	}
 	sops.SetDefaultPublishHandler(f)
 	s = NewClient(sops).(*client)
@@ -1388,11 +1395,33 @@ func Test_ResumeSubs(t *testing.T) {
 		t.Fatalf("Error on valid Publish.Connect(): %v", pConnToken.Error())
 	}
 
+	payload := "sample Payload"
 	if pubToken := p.Publish(topic, 1, false, payload); pubToken.Wait() && pubToken.Error() != nil {
 		t.Fatalf("Error on valid Client.Publish(): %v", pubToken.Error())
 	}
 
-	wait(choke)
+	timer := time.NewTicker(time.Second) // We wait a second to ensure message is only received once
+	var gotMsg bool
+resultLoop:
+	for {
+		select {
+		case msg := <-msgChan:
+			if msg.Topic() == topic && string(msg.Payload()) == payload {
+				if gotMsg {
+					t.Fatalf("Received message 1 twice")
+				}
+				gotMsg = true
+			} else {
+				t.Fatalf("Received unexpected message: %v, %v", msg.Topic(), msg.Payload())
+			}
+		case <-timer.C:
+			break resultLoop
+		}
+
+	}
+	if !gotMsg {
+		t.Error("did not receive message 1")
+	}
 
 	s.Disconnect(250)
 	p.Disconnect(250)
@@ -1448,11 +1477,12 @@ func Test_ResumeSubsWithReconnect(t *testing.T) {
 	c.Disconnect(250)
 }
 
-// Issue 209 - occasional deadlock when connections are lost unexpectedly
+// Issue 509 - occasional deadlock when connections are lost unexpectedly
 // This was quite a nasty deadlock which occurred in very rare circumstances; I could not come up with a reliable way of
 // replicating this but the below would cause it to happen fairly consistently (when the test was run a decent number
 // of times). Following the fix it ran 10,000 times without issue.
-//  go test -count 10000 -run DisconnectWhileProcessingIncomingPublish
+//
+//	go test -count 10000 -run DisconnectWhileProcessingIncomingPublish
 func Test_DisconnectWhileProcessingIncomingPublish(t *testing.T) {
 	topic := "/test/DisconnectWhileProcessingIncomingPublish"
 
@@ -1464,11 +1494,11 @@ func Test_DisconnectWhileProcessingIncomingPublish(t *testing.T) {
 
 	sops := NewClientOptions()
 	sops.AddBroker(FVTTCP)
-	sops.SetAutoReconnect(false)                 // We dont want the connection to be re-established
+	sops.SetAutoReconnect(false)                 // We don't want the connection to be re-established
 	sops.SetWriteTimeout(500 * time.Millisecond) // We will be sending a lot of publish messages and want go routines to clear...
 	// sops.SetOrderMatters(false)
 	sops.SetClientID("dwpip-sub")
-	// We need to know when the subscriber has lost its connection (this indicates that the deadlock has not occured)
+	// We need to know when the subscriber has lost its connection (this indicates that the deadlock has not occurred)
 	sDisconnected := make(chan struct{})
 	sops.SetConnectionLostHandler(func(Client, error) { close(sDisconnected) })
 
@@ -1500,10 +1530,9 @@ func Test_DisconnectWhileProcessingIncomingPublish(t *testing.T) {
 		i := 0
 		for {
 			p.Publish(topic, 1, false, fmt.Sprintf("test message: %d", i))
-			// After the connection goes down s.Publish will start blocking (this is not ideal but fixing its a problem for another time)
-			go func() { s.Publish(topic+"IGNORE", 1, false, fmt.Sprintf("test message: %d", i)) }()
+			// After the connection goes down s.Publish will start blocking (this is not ideal but fixing it's a problem for another time)
+			go func(i int) { s.Publish(topic+"IGNORE", 1, false, fmt.Sprintf("test message: %d", i)) }(i)
 			i++
-
 			if ctx.Err() != nil {
 				return
 			}
@@ -1511,9 +1540,13 @@ func Test_DisconnectWhileProcessingIncomingPublish(t *testing.T) {
 	}()
 
 	// Wait until we have received a message (ensuring that the stream of messages has started)
+	delay := time.NewTimer(time.Second) // Be careful with timers as this will be run in a tight loop!
 	select {
 	case <-msgReceived: // All good
-	case <-time.After(time.Second):
+		if !delay.Stop() { // Cleanly close timer as this may be run in a tight loop!
+			<-delay.C
+		}
+	case <-delay.C:
 		t.Errorf("no messages received")
 	}
 
@@ -1522,15 +1555,19 @@ func Test_DisconnectWhileProcessingIncomingPublish(t *testing.T) {
 	dm := packets.NewControlPacket(packets.Disconnect).(*packets.DisconnectPacket)
 	err := dm.Write(s.conn)
 	if err != nil {
-		t.Fatalf("error dending disconnect packet: %s", err)
+		t.Fatalf("error sending disconnect packet: %s", err)
 	}
 
 	// Lets give the library up to a second to shutdown (indicated by the status changing)
+	delay = time.NewTimer(time.Second) // Be careful with timers as this will be run in a tight loop!
 	select {
 	case <-sDisconnected: // All good
-	case <-time.After(time.Second):
-		cancel()                // no point leaving publisher running
-		time.Sleep(time.Second) // Allow publish calls to timeout (otherwise there will be tons of go routines running!)
+		if !delay.Stop() {
+			<-delay.C
+		}
+	case <-delay.C:
+		cancel()                     // no point leaving publisher running
+		time.Sleep(10 * time.Second) // Allow publish calls to timeout (otherwise there will be tons of go routines running!)
 		buf := make([]byte, 1<<20)
 		stacklen := runtime.Stack(buf, true)
 		t.Fatalf("connection was not lost as expected - probable deadlock. Stacktrace follows: %s", buf[:stacklen])
@@ -1538,10 +1575,85 @@ func Test_DisconnectWhileProcessingIncomingPublish(t *testing.T) {
 
 	cancel() // no point leaving publisher running
 
+	delay = time.NewTimer(time.Second) // Be careful with timers as this will be run in a tight loop!
 	select {
 	case <-pubDone:
-	case <-time.After(time.Second):
-		t.Errorf("pubdone not closed within a second")
+		if !delay.Stop() {
+			<-delay.C
+		}
+	case <-delay.C:
+		t.Errorf("pubdone not closed within two seconds (probably due to load on system but may be an issue)")
 	}
 	p.Disconnect(250) // Close publisher
+}
+
+// Test_ResumeSubsMaxInflight - Check the MaxResumePubInFlight option.
+// This is difficult to test without control of the broker (because we will be communicating via the broker not
+// directly. However, due to the way resume works when there is no limit to inflight messages message ordering is not
+// guaranteed. However, with SetMaxResumePubInFlight(1) it is guaranteed so we use that to test.
+// On my PC (using mosquitto under docker) running this without SetMaxResumePubInFlight(1) will fail with 1000 messages
+// (generally passes if only 100 are sent). With the option set it always passes.
+func Test_ResumeSubsMaxInflight(t *testing.T) {
+	topic := "/test/ResumeSubsMaxInflight"
+	var qos byte = 1
+
+	// When a connection is made with messages in the store normally it would be expected that many messages will be
+	// transmitted simultaneously; using MaxResumePubInFlight we can limit this to 1.
+	// subscribe to topic before establishing a connection, and publish a message after the publish client has connected successfully
+	sops := NewClientOptions().SetClientID("rsmif-Sub").AddBroker(FVTTCP).SetOrderMatters(true)
+	s := NewClient(sops) // s = subscriber
+	if sToken := s.Connect(); sToken.Wait() && sToken.Error() != nil {
+		t.Fatalf("Error on subscriber Client.Connect(): %v", sToken.Error())
+	}
+
+	incommingMsg := make(chan int, 1000)
+	var f MessageHandler = func(client Client, msg Message) {
+		num, _ := strconv.Atoi(string(msg.Payload()))
+		incommingMsg <- num
+	}
+
+	if sToken := s.Subscribe(topic, qos, f); sToken.Wait() && sToken.Error() != nil {
+		t.Fatalf("Error on subscriber Client.Subscribe(): %v", sToken.Error())
+	}
+
+	// Now we preload an ordered memory store with 100 messages and connect...
+	memStore := NewOrderedMemoryStore()
+	memStore.Open()
+
+	for i := 0; i < 1000; i++ {
+		pub := packets.NewControlPacket(packets.Publish).(*packets.PublishPacket)
+		pub.Qos = qos
+		pub.TopicName = topic
+		pub.Payload = []byte(strconv.Itoa(i))
+		pub.MessageID = uint16(i + 1)
+		memStore.Put(outboundKeyFromMID(pub.Details().MessageID), pub)
+		time.Sleep(time.Nanosecond)
+	}
+
+	pops := NewClientOptions().AddBroker(FVTTCP).SetClientID("rsmif-Pub").SetOrderMatters(false).
+		SetCleanSession(false).SetStore(memStore).SetMaxResumePubInFlight(1)
+	p := NewClient(pops)
+	if pToken := p.Connect(); pToken.Wait() && pToken.Error() != nil { // Note: messages will be received before this completes
+		t.Fatalf("Error on publisher Client.Connect(): %v", pToken.Error())
+	}
+	// We should receive 100 * 1's
+	timeOut := time.NewTimer(30 * time.Second)
+	defer timeOut.Stop()
+getLoop:
+	for i := 0; i < 1000; i++ {
+		select {
+		case <-timeOut.C:
+			t.Errorf("timed out waiting for messages (after receiving %d)", i)
+			break getLoop
+		case s := <-incommingMsg:
+			if s != i {
+				t.Errorf("received message out of order (expected %d, got %d)", i, s)
+				break getLoop
+			}
+			continue
+		}
+	}
+
+	p.Disconnect(250)
+	s.Disconnect(250)
 }

@@ -1,10 +1,14 @@
 /*
- * Copyright (c) 2013 IBM Corp.
+ * Copyright (c) 2021 IBM Corp and others.
  *
  * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * are made available under the terms of the Eclipse Public License v2.0
+ * and Eclipse Distribution License v1.0 which accompany this distribution.
+ *
+ * The Eclipse Public License is available at
+ *    https://www.eclipse.org/legal/epl-2.0/
+ * and the Eclipse Distribution License is available at
+ *   http://www.eclipse.org/org/documents/edl-v10.php.
  *
  * Contributors:
  *    Seth Hoenig
@@ -15,7 +19,6 @@
 package mqtt
 
 import (
-	"fmt"
 	"testing"
 )
 
@@ -52,8 +55,9 @@ func Test_freeID(t *testing.T) {
 		t.Fatalf("i1 was wrong: %v", i1)
 	}
 
-	i2 := mids.getID(&DummyToken{})
-	fmt.Printf("i2: %v\n", i2)
+	// The below may be needed for a specific test but leaving it in permanently makes output confusing
+	// i2 := mids.getID(&DummyToken{})
+	// fmt.Printf("i2: %v\n", i2)
 }
 
 func Test_noFreeID(t *testing.T) {

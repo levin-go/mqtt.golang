@@ -1,10 +1,14 @@
 /*
- * Copyright (c) 2013 IBM Corp.
+ * Copyright (c) 2021 IBM Corp and others.
  *
  * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * are made available under the terms of the Eclipse Public License v2.0
+ * and Eclipse Distribution License v1.0 which accompany this distribution.
+ *
+ * The Eclipse Public License is available at
+ *    https://www.eclipse.org/legal/epl-2.0/
+ * and the Eclipse Distribution License is available at
+ *   http://www.eclipse.org/org/documents/edl-v10.php.
  *
  * Contributors:
  *    Seth Hoenig
@@ -15,7 +19,7 @@
 package mqtt
 
 import (
-	"io/ioutil"
+	"io/fs"
 	"os"
 	"path"
 	"sort"
@@ -155,20 +159,25 @@ func (store *FileStore) Reset() {
 func (store *FileStore) all() []string {
 	var err error
 	var keys []string
-	var files fileInfos
 
 	if !store.opened {
 		ERROR.Println(STR, "trying to use file store, but not open")
 		return nil
 	}
 
-	files, err = ioutil.ReadDir(store.directory)
+	entries, err := os.ReadDir(store.directory)
 	chkerr(err)
+	files := make(fileInfos, 0, len(entries))
+	for _, entry := range entries {
+		info, err := entry.Info()
+		chkerr(err)
+		files = append(files, info)
+	}
 	sort.Sort(files)
 	for _, f := range files {
 		DEBUG.Println(STR, "file in All():", f.Name())
 		name := f.Name()
-		if name[len(name)-4:] != msgExt {
+		if len(name) < len(msgExt) || name[len(name)-len(msgExt):] != msgExt {
 			DEBUG.Println(STR, "skipping file, doesn't have right extension: ", name)
 			continue
 		}
@@ -242,7 +251,7 @@ func exists(file string) bool {
 	return true
 }
 
-type fileInfos []os.FileInfo
+type fileInfos []fs.FileInfo
 
 func (f fileInfos) Len() int {
 	return len(f)

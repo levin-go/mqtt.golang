@@ -1,10 +1,14 @@
 /*
- * Copyright (c) 2013 IBM Corp.
+ * Copyright (c) 2021 IBM Corp and others.
  *
  * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * are made available under the terms of the Eclipse Public License v2.0
+ * and Eclipse Distribution License v1.0 which accompany this distribution.
+ *
+ * The Eclipse Public License is available at
+ *    https://www.eclipse.org/legal/epl-2.0/
+ * and the Eclipse Distribution License is available at
+ *   http://www.eclipse.org/org/documents/edl-v10.php.
  *
  * Contributors:
  *    Seth Hoenig
@@ -24,6 +28,21 @@ import (
 // ClientOptionsReader provides an interface for reading ClientOptions after the client has been initialized.
 type ClientOptionsReader struct {
 	options *ClientOptions
+}
+
+// NewOptionsReader creates a ClientOptionsReader, this should only be used for mocking purposes.
+//
+// An example implementation:
+//
+//	func (c *mqttClientMock) OptionsReader() mqtt.ClientOptionsReader {
+//		opts := mqtt.NewClientOptions()
+//		opts.UserName = "TestUserName"
+//		return mqtt.NewOptionsReader(opts)
+//	}
+func NewOptionsReader(o *ClientOptions) ClientOptionsReader {
+	return ClientOptionsReader{
+		options: o,
+	}
 }
 
 // Servers returns a slice of the servers defined in the clientoptions

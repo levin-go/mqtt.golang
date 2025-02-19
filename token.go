@@ -1,10 +1,14 @@
 /*
- * Copyright (c) 2014 IBM Corp.
+ * Copyright (c) 2021 IBM Corp and others.
  *
  * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-v10.html
+ * are made available under the terms of the Eclipse Public License v2.0
+ * and Eclipse Distribution License v1.0 which accompany this distribution.
+ *
+ * The Eclipse Public License is available at
+ *    https://www.eclipse.org/legal/epl-2.0/
+ * and the Eclipse Distribution License is available at
+ *   http://www.eclipse.org/org/documents/edl-v10.php.
  *
  * Contributors:
  *    Allan Stockdill-Mander
@@ -13,6 +17,7 @@
 package mqtt
 
 import (
+	"errors"
 	"sync"
 	"time"
 
@@ -197,4 +202,21 @@ type UnsubscribeToken struct {
 // required to provide information about calls to Disconnect()
 type DisconnectToken struct {
 	baseToken
+}
+
+// TimedOut is the error returned by WaitTimeout when the timeout expires
+var TimedOut = errors.New("context canceled")
+
+// WaitTokenTimeout is a utility function used to simplify the use of token.WaitTimeout
+// token.WaitTimeout may return `false` due to time out but t.Error() still results
+// in nil.
+// `if t := client.X(); t.WaitTimeout(time.Second) && t.Error() != nil {` may evaluate
+// to false even if the operation fails.
+// It is important to note that if TimedOut is returned, then the operation may still be running
+// and could eventually complete successfully.
+func WaitTokenTimeout(t Token, d time.Duration) error {
+	if !t.WaitTimeout(d) {
+		return TimedOut
+	}
+	return t.Error()
 }
